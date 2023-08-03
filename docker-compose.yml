@@ -1,0 +1,91 @@
+version: '3'
+services:
+
+  clash:
+    image: dreamacro/clash
+    container_name: clash
+    ports:
+      - 7890:7890
+      - 7891:7891
+      - 9090:9090
+    restart: always
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget https://ghproxy.com/https://github.com/aiboboxx/clashfree/blob/main/clash.yml?raw=true -O /root/.config/clash/config.yaml"
+        ]
+      interval: 2h
+      timeout: 15s
+      retries: 1
+    entrypoint:
+      - sh
+      - -c
+      - |
+        wget https://ghproxy.com/https://github.com/aiboboxx/clashfree/blob/main/clash.yml?raw=true -O /root/.config/clash/config.yaml &&
+        /clash
+
+  django:
+    image: djangotemplate:latest
+    container_name: django
+    restart: always
+    env_file: ./proj/.env
+    working_dir: "/root/proj"
+    command:
+      - sh
+      - -c
+      - |
+        bash /root/wait-for-it.sh -t 0 $REDIS_HOST:6379 &&
+        bash /root/wait-for-it.sh -t 0 $RABBITMQ_HOST:5672 &&
+        bash /root/wait-for-it.sh -t 0 $MYSQL_HOST:3306 &&
+        python3 manage.py migrate &&
+        python3 manage.py migrate youtube --database=youtube&&
+        python3 manage.py migrate bilibili --database=bilibili&&
+        python3 manage.py migrate &&
+        echo yes | python3 manage.py collectstatic &&
+        gunicorn -w 1 -k gevent proj.wsgi -b 0.0.0.0:5000 
+    volumes:
+      - "./proj:/root/proj"
+      - "./wait-for-it.sh:/root/wait-for-it.sh"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl 127.0.0.1:5000" ]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    ports:
+      - "5000:5000"
+      - "5001:5001"
+    extra_hosts:
+      redis: $REDIS_HOST
+      rabbitmq: $RABBITMQ_HOST
+      mysql: $MYSQL_HOST
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+        delay: 3s
+      resources:
+        limits:
+          memory: 200M
+
+  nginx:
+    image: nginx
+    container_name: nginx
+    restart: always
+    ports:
+      - 8000:8000
+    volumes:
+      - "./nginx/conf.d:/etc/nginx/conf.d"
+      - "./proj/static:/var/www/html"
+    healthcheck:
+      test: [ "CMD-SHELL", "curl 127.0.0.1:8000" ]
+      interval: 5s
+      timeout: 2s
+      retries: 3
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: any
+      resources:
+        limits:
+          memory: 200M
